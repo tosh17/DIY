@@ -1,0 +1,6 @@
+.gradle/
+build/
+train/output/
+train/__pycache__/
+*.iml
+.idea/

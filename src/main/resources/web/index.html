@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DiY. Радиодетали</title>
+<style>
+  :root { --bg: #f3efe6; --paper: #fffdf8; --ink: #1d1a16; --muted: #6d655c; --line: #e3dcd0; --accent: #8a3d22; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.5 Georgia, serif; }
+  main { max-width: 820px; margin: 0 auto; padding: 28px 18px 64px; }
+  h1 { font-size: 36px; line-height: 1.1; font-weight: 600; margin: 0 0 8px; }
+  .meta { color: var(--muted); font: 14px/1.4 ui-sans-serif, system-ui, sans-serif; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0; }
+  button, input, textarea { font: 15px/1.4 ui-sans-serif, system-ui, sans-serif; }
+  button { background: var(--paper); border: 1px solid var(--line); padding: 8px 12px; cursor: pointer; }
+  button.on { border-color: var(--accent); color: var(--accent); }
+  textarea, input { width: 100%; border: 1px solid var(--line); background: var(--paper); padding: 10px; color: var(--ink); }
+  .msg { background: var(--paper); border: 1px solid var(--line); padding: 12px 14px; margin: 10px 0; }
+  .msg b { font: 600 13px/1.3 ui-sans-serif, system-ui, sans-serif; color: var(--muted); }
+  .card { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+  .err { color: #9f1239; }
+</style>
+</head>
+<body>
+<main>
+  <p class="meta">DiY · подбор радиодеталей</p>
+  <h1>Какие детали взять</h1>
+  <p>Опиши поделку или спроси про деталь. Обычная модель — Qwen2.5 3B. Обученная — Qwen2.5 1.5B после LoRA, в четырёх битах. В память влезает одна: вторая при переключении гасится.</p>
+  <div class="row">
+    <button id="base" type="button">Обычная 3B</button>
+    <button id="tuned" type="button">Обученная 1.5B</button>
+    <span class="meta" id="state"></span>
+  </div>
+  <div id="log"></div>
+  <textarea id="text" rows="3" placeholder="Например: включить мотор 12 В от Arduino"></textarea>
+  <div class="row"><button id="send" type="button">Спросить</button></div>
+  <h2>Паспорт детали</h2>
+  <div class="row">
+    <input id="part" placeholder="BC547">
+    <button id="lookup" type="button">Открыть</button>
+  </div>
+  <div id="passport"></div>
+</main>
+<script>
+const session = localStorage.getItem("diy-session") || String(Date.now());
+localStorage.setItem("diy-session", session);
+const log = document.querySelector("#log");
+const state = document.querySelector("#state");
+const buttons = { base: document.querySelector("#base"), tuned: document.querySelector("#tuned") };
+
+function line(title, html) {
+  const node = document.createElement("div");
+  node.className = "msg";
+  node.innerHTML = "<b>" + title + "</b><div>" + html + "</div>";
+  log.append(node);
+  node.scrollIntoView({ block: "nearest" });
+}
+
+function escape(text) {
+  return text.replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+}
+
+async function refresh() {
+  const data = await (await fetch("/api/model")).json();
+  state.textContent = data.model;
+  buttons.base.classList.toggle("on", data.slot === "base");
+  buttons.tuned.classList.toggle("on", data.slot === "tuned");
+}
+
+async function choose(slot) {
+  state.textContent = "гашу другую модель…";
+  const response = await fetch("/api/model", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ slot })
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    state.textContent = data.error || "не переключилось";
+    return;
+  }
+  await refresh();
+}
+
+buttons.base.onclick = () => choose("base");
+buttons.tuned.onclick = () => choose("tuned");
+
+document.querySelector("#send").onclick = async () => {
+  const text = document.querySelector("#text").value.trim();
+  if (!text) return;
+  document.querySelector("#text").value = "";
+  line("Вы", escape(text));
+  const response = await fetch("/api/sessions/" + session + "/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text })
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    line("Ошибка", "<span class='err'>" + escape(data.error || "сбой") + "</span>");
+    return;
+  }
+  const cards = (data.picks || []).map(pick => {
+    const spec = pick.summary ? "<div class='card'><b>" + escape(pick.name) + "</b> · " + escape(pick.voltage || "") + " · " + escape(pick.current || "") + "<br>" + escape(pick.summary) + "</div>" : "<div class='card'>" + escape(pick.name) + "</div>";
+    return spec;
+  }).join("");
+  line(data.model + " · " + data.seconds + " с", escape(data.reply) + cards);
+};
+
+document.querySelector("#lookup").onclick = async () => {
+  const name = document.querySelector("#part").value.trim();
+  if (!name) return;
+  const response = await fetch("/api/parts/" + encodeURIComponent(name));
+  const data = await response.json();
+  const node = document.querySelector("#passport");
+  if (!response.ok) {
+    node.innerHTML = "<p class='err'>" + escape(data.error || "нет детали") + "</p>";
+    return;
+  }
+  node.innerHTML = "<div class='msg'><b>" + escape(data.name) + "</b><div>" + escape(data.summary) + "<br>Напряжение: " + escape(data.voltage) + "<br>Ток: " + escape(data.current) + "<br>Корпус: " + escape(data.pack) + "</div></div>";
+};
+
+refresh();
+</script>
+</body>
+</html>
